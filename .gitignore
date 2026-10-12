@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+.DS_Store
+dist/
+downloads/
+output/
+settings.json
+# видео, картинки и архивы в репозиторий не попадают
+*.zip
+*.mp4
+*.mov
+*.mp3
+*.png
+*.jpg
+*.webp

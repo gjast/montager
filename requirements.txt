@@ -1,0 +1,7 @@
+faster-whisper
+pillow
+rich
+pytubefix
+yt-dlp[default]
+instaloader
+parth-dl
