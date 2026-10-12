@@ -24,7 +24,9 @@ BASE = f"http://127.0.0.1:{PORT}"
 
 def main():
     dist = Path(sys.argv[1]).resolve()
-    work = Path(tempfile.mkdtemp(prefix="montager_smoke_"))
+    # resolve: временная папка на Windows приходит в коротком виде (RUNNER~1),
+    # а программа показывает полный путь
+    work = Path(tempfile.mkdtemp(prefix="montager_smoke_")).resolve()
     home, store = work / "home", work / "store"
     home.mkdir()
     exe = home / "Montager.exe"
@@ -52,7 +54,7 @@ def main():
     # 1. установка с нуля: всё качается, библиотеки загружаются, ffmpeg и node на месте
     code, out = launch("--selfcheck")
     expect(code == 0 and "selfcheck ok" in out, "установка с нуля и загрузка всех библиотек")
-    expect(str(home) in out, "ролики и настройки — рядом с exe")
+    expect(str(home).lower() in out.lower(), "ролики и настройки — рядом с exe")
 
     # 2. монтаж ролика (ffmpeg берём тот, что поставила запускалка)
     state = json.loads((store / "state.json").read_text(encoding="utf-8"))
