@@ -13,3 +13,6 @@ settings.json
 *.png
 *.jpg
 *.webp
+# кроме картинок для README
+!docs/*.png
+!docs/*.jpg

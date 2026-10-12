@@ -25,7 +25,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-LAUNCHER_VERSION = 1
+LAUNCHER_VERSION = 2
 REPO = "gjast/montager"
 MANIFEST_URL = f"https://github.com/{REPO}/releases/latest/download/manifest.json"
 

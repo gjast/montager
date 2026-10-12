@@ -206,7 +206,8 @@ def build_launcher(work, out):
     if here and here.lower() != repo.lower():
         sys.exit(f"в launcher.py указан репозиторий {repo}, а сборка идёт в {here}")
     run([sys.executable, "-m", "PyInstaller", "--onefile", "--console", "--clean", "--noconfirm",
-         "--name", "Montager", "--distpath", out, "--workpath", work / "pyinstaller",
+         "--name", "Montager", "--icon", ROOT / "launcher" / "icon.ico",
+         "--distpath", out, "--workpath", work / "pyinstaller",
          "--specpath", work, ROOT / "launcher" / "launcher.py"])
     exe = out / "Montager.exe"
     return {"version": launcher_version(), "file": exe.name, "size": exe.stat().st_size,
