@@ -10,10 +10,23 @@ YouTube:
 Instagram (рилсы и посты с видео из открытых аккаунтов), всё без входа в аккаунт:
 1. yt-dlp — единственный берёт потоки 1080×1920; остальные получают готовый файл 720×1280.
 2. parth-dl — прямая ссылка на файл; быстрый, подхватывает, когда yt-dlp просят войти.
-3. instaloader — без входа Instagram отвечает ему отказом чаще остальных, поэтому последний.
+3. instaloader — без входа Instagram отвечает ему отказом чаще остальных.
+4–5. eeinstagram, kkinstagram — сервисы-посредники (см. ниже).
 
-Остальные сайты (TikTok и т. д.) — yt-dlp.
+TikTok:
+1. yt-dlp.
+2. gallery-dl — свой, независимый разбор страницы TikTok: выручает, когда yt-dlp сломан.
+3. fxtiktok (tnktok.com) — сервис-посредник.
+
+Сервисы-посредники — сторонние сайты, которые сами ходят за роликом и отвечают
+перенаправлением на файл. К сайту обращаются они, а не мы, поэтому выручают, когда
+Instagram или TikTok ограничил запросы с нашего адреса. Им уходит только ссылка на ролик;
+сам файл качаем не у них, а с серверов Instagram/TikTok — другие адреса не принимаются.
+Стоят последними: чужой сервис может закрыться в любой день.
+
+Остальные сайты — yt-dlp.
 """
+import html
 import json
 import os
 import re
@@ -21,6 +34,7 @@ import shutil
 from datetime import datetime, timezone
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -45,7 +59,7 @@ class BotBlocked(DownloadError):
     """YouTube принял запросы с этого адреса за бота и ничего не отдаёт."""
 
 
-SOURCE_NAMES = {"youtube": "YouTube", "instagram": "Instagram"}
+SOURCE_NAMES = {"youtube": "YouTube", "instagram": "Instagram", "tiktok": "TikTok"}
 USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 
@@ -56,12 +70,14 @@ def with_scheme(url):
 
 
 def source_of(url):
-    """По адресу ссылки: 'youtube', 'instagram' или 'other'."""
+    """По адресу ссылки: 'youtube', 'instagram', 'tiktok' или 'other'."""
     host = (urllib.parse.urlparse(with_scheme(url)).hostname or "").lower()
     if host == "youtu.be" or re.search(r"(^|\.)(youtube|youtube-nocookie)\.com$", host):
         return "youtube"
     if host == "instagr.am" or re.search(r"(^|\.)instagram\.com$", host):
         return "instagram"
+    if re.search(r"(^|\.)tiktok\.com$", host):
+        return "tiktok"
     return "other"
 
 
@@ -266,7 +282,7 @@ def ytdlp_info(url):
     title = info.get("title") or "video"
     if source_of(url) == "instagram":
         # у yt-dlp название рилса — «Video by nasa»; берём подпись и номер, как у остальных способов
-        title = insta_title(info.get("channel") or info.get("uploader_id"),
+        title = post_title(info.get("channel") or info.get("uploader_id"),
                             info.get("description"), info.get("id"))
     return {"title": title, "length": int(length),
             "resolution": f"{max(sides)}p" if sides else "?", "handle": url}
@@ -341,11 +357,15 @@ def insta_url(url):
     return f"https://www.instagram.com/reel/{code}/"
 
 
-def insta_title(author, caption, code):
-    """Имя файла: автор, начало подписи и номер поста (чтобы ролики не затирали друг друга)."""
+def post_title(author, caption, code):
+    """Имя файла: автор, начало подписи и номер поста (чтобы ролики не затирали друг друга).
+    Подпись ужимается так, чтобы номер не обрезался: имя файла ограничено 80 знаками."""
+    author = f"@{author}" if author else ""
+    code = str(code or "")
     lines = (caption or "").strip().splitlines()
-    parts = [f"@{author}" if author else "", lines[0].strip()[:50] if lines else "", code or ""]
-    return " ".join(x for x in parts if x) or "instagram"
+    room = max(0, 78 - len(author) - len(code))
+    parts = [author, lines[0].strip()[:min(50, room)].strip() if lines else "", code]
+    return " ".join(x for x in parts if x) or "video"
 
 
 def parth_info(url):
@@ -372,7 +392,7 @@ def parth_info(url):
     best = max(formats, key=lambda f: (f.get("width") or 0) * (f.get("height") or 0))
     # размеры в ответе Instagram — от оригинала, сам файл обычно меньше; смотрим в файле
     side, length = probe_url(best["url"])
-    return {"title": insta_title(info.get("uploader"), info.get("title"), insta_code(page)),
+    return {"title": post_title(info.get("uploader"), info.get("title"), insta_code(page)),
             "length": int(info.get("duration") or length),
             "resolution": f"{side}p" if side else "?", "handle": best["url"]}
 
@@ -400,7 +420,7 @@ def instaloader_info(url):
     if not clips:
         raise DownloadError("в этом посте нет видео — только фото")
     side, probed = probe_url(clips[0])
-    return {"title": insta_title(author, caption, insta_code(page)),
+    return {"title": post_title(author, caption, insta_code(page)),
             "length": int(length or probed), "resolution": f"{side}p" if side else "?",
             "handle": clips[0]}
 
@@ -430,32 +450,192 @@ def direct_download(video, out, start, end, whole, on_progress):
                 break
             except urllib.error.HTTPError as e:
                 # ссылка на файл живёт недолго; после отказа её надо получать заново
-                raise DownloadError(f"Instagram не отдал файл: HTTP {e.code}") from e
+                raise DownloadError(f"сервер не отдал файл: HTTP {e.code}") from e
             except (urllib.error.URLError, OSError) as e:
                 last = e
             time.sleep(1 + attempt)
         else:
             raise DownloadError(f"не удалось скачать видео: {last}")
+        return cut_file(raw, out, start, end, whole)
 
-        cmd = ["ffmpeg", "-v", "error", "-y"]
-        if not whole:
-            cmd += ["-ss", str(start)]
-        cmd += ["-i", str(raw), "-map", "0:v", "-map", "0:a?", "-c", "copy"]
-        if not whole:
-            cmd += ["-t", str(end - start)]
-        cmd += ["-movflags", "+faststart", str(out)]
-        r = subprocess.run(cmd, capture_output=True, text=True)
-        if r.returncode != 0:
-            raise DownloadError("не удалось собрать файл:\n" + r.stderr.strip()[-300:])
+
+def cut_file(raw, out, start, end, whole):
+    """Перекладывает скачанный целиком файл в out, вырезая отрезок, если он задан."""
+    cmd = ["ffmpeg", "-v", "error", "-y"]
+    if not whole:
+        cmd += ["-ss", str(start)]
+    cmd += ["-i", str(raw), "-map", "0:v", "-map", "0:a?", "-c", "copy"]
+    if not whole:
+        cmd += ["-t", str(end - start)]
+    cmd += ["-movflags", "+faststart", str(out)]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise DownloadError("не удалось собрать файл:\n" + r.stderr.strip()[-300:])
     return out
+
+
+# ---------- сервисы-посредники ----------
+# так представляются боты мессенджеров; посредники отдают им страницу с адресом файла
+BOT_AGENT = "TelegramBot (like TwitterBot)"
+# принимаем файл только с серверов самих Instagram и TikTok
+CDN = {"instagram": r"(^|\.)(cdninstagram\.com|fbcdn\.net)$",
+       "tiktok": r"(^|\.)(tiktokcdn(-[a-z]+)?\.com|tiktokv\.(com|us|eu)|tiktok\.com|"
+                 r"byteoversea\.com|muscdn\.com)$"}
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def relay_page(url):
+    """Страница посредника в том виде, в каком он отдаёт её ботам мессенджеров."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": BOT_AGENT})
+        with urllib.request.urlopen(req, timeout=25) as r:
+            return r.read(600_000).decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        raise DownloadError(f"посредник ответил отказом: HTTP {e.code}") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise DownloadError(f"посредник недоступен: {e}") from e
+
+
+def relay_meta(page, name):
+    """Значение тега <meta property|name="..."> со страницы посредника."""
+    m = re.search(rf'<meta (?:property|name)="{re.escape(name)}" content="([^"]*)"', page)
+    return html.unescape(m.group(1)).strip() if m else ""
+
+
+def relay_target(url, site, agent=BOT_AGENT):
+    """Куда посредник перенаправляет за файлом. Адрес должен быть сервером самого сайта:
+    файл, который посредник предлагает взять у себя или где-то ещё, не берём."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": agent})
+        with urllib.request.build_opener(_NoRedirect).open(req, timeout=25):
+            raise DownloadError("посредник не дал ссылку на файл")
+    except urllib.error.HTTPError as e:
+        target = e.headers.get("Location") if e.code in (301, 302, 303, 307, 308) else None
+        if not target:
+            raise DownloadError(f"посредник ответил отказом: HTTP {e.code}") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise DownloadError(f"посредник недоступен: {e}") from e
+    parts = urllib.parse.urlparse(target)
+    if parts.scheme != "https" or not re.search(CDN[site], (parts.hostname or "").lower()):
+        raise DownloadError(f"посредник дал ссылку на посторонний сервер ({parts.hostname})")
+    return target
+
+
+def relay_video(media, title):
+    side, length = probe_url(media)
+    if not side:
+        raise DownloadError("по ссылке посредника нет видео")
+    return {"title": title, "length": int(length), "resolution": f"{side}p", "handle": media}
+
+
+def eeinstagram_info(url):
+    code = insta_code(insta_url(url))
+    page = relay_page(f"https://www.eeinstagram.com/reel/{code}/")
+    author = relay_meta(page, "twitter:title").lstrip("@")
+    m = re.search(r'href="[^"]*/oembed\?text=([^&"]*)', page)
+    caption = urllib.parse.unquote_plus(html.unescape(m.group(1))) if m else ""
+    media = relay_target(f"https://www.eeinstagram.com/videos/{code}/1", "instagram")
+    return relay_video(media, post_title(author, caption, code))
+
+
+def kkinstagram_info(url):
+    code = insta_code(insta_url(url))
+    media = relay_target(f"https://www.kkinstagram.com/reel/{code}/", "instagram")
+    return relay_video(media, post_title(None, None, code))
+
+
+def fxtiktok_info(url):
+    """fxTikTok (github.com/okdargy/fxTikTok): та же ссылка, только на tnktok.com."""
+    path = urllib.parse.urlparse(with_scheme(url)).path
+    page = relay_page("https://tnktok.com" + (path if path.startswith("/") else "/" + path))
+    m = re.search(r"/generate/video/(\d+)", relay_meta(page, "og:video"))
+    if not m:
+        raise DownloadError("посредник не нашёл видео по этой ссылке")
+    title = post_title(relay_meta(page, "twitter:creator").lstrip("@"),
+                       relay_meta(page, "og:description"), m.group(1))
+    base = f"https://offload.tnktok.com/generate/video/{m.group(1)}.mp4"
+    try:
+        # лучшее качество (1080p, HEVC) fxTikTok отдаёт только браузерам: ботам мессенджеров
+        # достаётся 576p, которое те точно смогут показать
+        media = relay_target(base + "?hq=true", "tiktok", USER_AGENT)
+    except DownloadError:
+        media = relay_target(base, "tiktok")
+    return relay_video(media, title)
+
+
+# ---------- gallery-dl (TikTok) ----------
+def gallery_run(args, timeout):
+    """gallery-dl отдельным процессом: у него лицензия GPL, и так он остаётся самостоятельной
+    программой, а не частью нашей. Заодно зависший запрос обрывается по времени.
+    Пути к библиотекам передаём сами — Python из набора для Windows читает их только так."""
+    code = ("import sys; sys.path[:0] = " + repr([p for p in sys.path if p])
+            + "; import gallery_dl; sys.exit(gallery_dl.main())")
+    try:
+        return subprocess.run([sys.executable, "-c", code, "--retries", "1", "--http-timeout", "25",
+                               *args], capture_output=True, timeout=timeout,
+                              stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired as e:
+        raise DownloadError("gallery-dl не ответил вовремя") from e
+
+
+def gallery_error(result):
+    text = (result.stderr or b"").decode("utf-8", "replace").strip().splitlines()
+    return DownloadError("gallery-dl: " + (text[-1][:300] if text else "не удалось получить видео"))
+
+
+def gallery_info(url):
+    r = gallery_run(["-j", with_scheme(url)], 90)
+    try:
+        items = json.loads(r.stdout.decode("utf-8", "replace"))
+    except ValueError:
+        raise gallery_error(r) from None
+    # в выдаче gallery-dl запись с адресом файла — [3, адрес, сведения]
+    clips = [x for x in items if isinstance(x, list) and len(x) == 3 and x[0] == 3
+             and isinstance(x[2], dict) and x[2].get("extension") == "mp4"]
+    if not clips:
+        failed = [x[1].get("message") for x in items
+                  if isinstance(x, list) and x and x[0] == -1 and isinstance(x[1], dict)]
+        raise DownloadError("gallery-dl: " + (str(failed[0])[:300] if failed else "в посте нет видео"))
+    info = clips[0][2]
+    author = info.get("author")
+    # width/height в записи — от самого слабого варианта; gallery-dl качает лучший из bitrateInfo
+    video = info.get("video") if isinstance(info.get("video"), dict) else {}
+    sizes = [x.get("PlayAddr") for x in video.get("bitrateInfo") or [] if isinstance(x, dict)]
+    sizes = [(a.get("Width"), a.get("Height")) for a in sizes if isinstance(a, dict)]
+    sizes = [min(w, h) for w, h in sizes if isinstance(w, int) and isinstance(h, int)]
+    side = max(sizes) if sizes else min(int(info.get("width") or 0), int(info.get("height") or 0))
+    return {"title": post_title(author.get("uniqueId") if isinstance(author, dict) else author,
+                                info.get("desc"), info.get("id")),
+            "length": int(info.get("duration") or 0),
+            "resolution": f"{side}p" if side else "?", "handle": with_scheme(url)}
+
+
+def gallery_download(video, out, start, end, whole, on_progress):
+    """Файл качает сам gallery-dl: ссылка TikTok работает только с его же куками."""
+    with tempfile.TemporaryDirectory(prefix="gdl_") as tmp:
+        r = gallery_run(["-D", tmp, "-f", "video.{extension}", "--no-mtime", video["handle"]], 600)
+        raw = Path(tmp) / "video.mp4"
+        if r.returncode != 0 or not raw.is_file():
+            raise gallery_error(r)
+        if on_progress:
+            size = raw.stat().st_size
+            on_progress(size, size)
+        return cut_file(raw, out, start, end, whole)
 
 
 # ---------- общий вход: способы пробуются по очереди ----------
 ENGINES = {"pytubefix": pytube_info, "yt-dlp": ytdlp_info,
-           "parth-dl": parth_info, "instaloader": instaloader_info}
+           "parth-dl": parth_info, "instaloader": instaloader_info,
+           "eeinstagram": eeinstagram_info, "kkinstagram": kkinstagram_info,
+           "gallery-dl": gallery_info, "fxtiktok": fxtiktok_info}
 # какими способами и в каком порядке качать с каждого источника
 ROUTES = {"youtube": ["pytubefix", "yt-dlp"],
-          "instagram": ["yt-dlp", "parth-dl", "instaloader"],
+          "instagram": ["yt-dlp", "parth-dl", "instaloader", "eeinstagram", "kkinstagram"],
+          "tiktok": ["yt-dlp", "gallery-dl", "fxtiktok"],
           "other": ["yt-dlp"]}
 
 
@@ -532,6 +712,8 @@ def download(video, start, end, on_progress=None, on_note=None):
                 made = pytube_download(video, out, start, end, whole, on_progress)
             elif video["engine"] == "yt-dlp":
                 made = ytdlp_download(video, out, start, end, whole, on_progress)
+            elif video["engine"] == "gallery-dl":
+                made = gallery_download(video, out, start, end, whole, on_progress)
             else:
                 made = direct_download(video, out, start, end, whole, on_progress)
             return clean_file(made)

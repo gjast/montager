@@ -55,6 +55,9 @@ def selfcheck():
         if shutil.which(name) is None:
             sys.exit(f"selfcheck: не найден {name}")
     montage.video_encoder()
+    # gallery-dl запускается отдельным процессом — проверяем, что он находит свои модули
+    if download.gallery_run(["--version"], 60).returncode != 0:
+        sys.exit("selfcheck: gallery-dl не запускается")
     print("selfcheck ok:", f"python {sys.version.split()[0]},",
           f"yt-dlp {yt_dlp.version.__version__},", f"faster-whisper {faster_whisper.__version__},",
           f"home {montage.HOME}")
