@@ -4,7 +4,10 @@
 Видео 1 — сверху, задаёт длину ролика и звук, по нему делаются субтитры.
 Видео 2 — снизу, без звука (зацикливается, если короче); без него видео 1 занимает весь кадр.
 Музыка — необязательный фон под весь ролик.
-Видео 3 — вставка, показывается каждые 30 секунд; на это время фон темнеет, а звук видео 1 приглушается.
+Баннер (видео 3) — одно из двух:
+  заставка — видео, показывается каждые 30 секунд; на это время фон темнеет, а звук ролика замолкает;
+  постоянный баннер — картинка или видео по кругу, виден весь ролик внизу по центру.
+Зелёный фон у баннера без прозрачности убирается сам.
 
 Ролик режется на куски, которые рендерятся параллельно, потом склеиваются.
 """
@@ -72,17 +75,22 @@ V3_TOP = 1160         # верхний край содержимого виде�
 V3_FADE = 0.3         # появление/исчезновение, если у видео 3 нет прозрачности
 V3_DIM = 0.5          # насколько затемнять фон, пока идёт видео 3 (0 — не затемнять)
 
-# картинка-баннер: висит в кадре весь ролик, по центру снизу, слегка левитируя
+# постоянный баннер: картинка или видео по кругу, виден весь ролик, по центру снизу
 BANNER_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 BAN_W = 760           # ширина картинки в кадре (кадр — 1080)
 BAN_MAX_H = 400
 BAN_BOTTOM = 150      # отступ снизу
 BAN_OPACITY = 1.0     # прозрачность баннера (1 — непрозрачный)
-BAN_FLOAT_X = 12      # размах покачивания вбок, пикселей (0 — не двигать)
-BAN_FLOAT_Y = 18      # размах покачивания вверх-вниз
+BAN_FLOAT_X = 0       # размах покачивания вбок, пикселей (0 — баннер стоит на месте)
+BAN_FLOAT_Y = 0       # размах покачивания вверх-вниз
 BAN_FLOAT_TX = 6.5    # сек, период качания вбок
 BAN_FLOAT_TY = 4.3    # сек, период качания вверх-вниз
 DIM_FADE = 0.3        # сек, плавность затемнения
+
+# зелёный фон у баннера и заставки без прозрачности убирается сам (хромакей)
+CHROMA = True
+CHROMA_SIMILARITY = 0.16   # какие оттенки считать фоном: больше — вырезается смелее
+CHROMA_BLEND = 0.06        # мягкость края
 
 BAR_FILL = 0.2        # строка/столбец, где светлых точек меньше этой доли, — чёрное поле
 
@@ -142,45 +150,48 @@ def save_settings(**values):
         pass
 
 
-def banner_key(path):
-    return "banner_image" if is_image(path) else "banner_video"
+def banner_key(always):
+    return "banner_always" if always else "banner_video"
 
 
 def remembered(key):
-    """Прежний файл этого вида, если он ещё на месте."""
+    """Прежний файл для этого вида баннера, если он ещё на месте."""
     data = load_settings()
-    old = data.get("banner")           # с прошлых версий баннер был один
-    if old and not data.get(banner_key(old)):
-        data[banner_key(old)] = old
+    # с прошлых версий: баннер был один, потом картинка хранилась как banner_image
+    old = data.get("banner")
+    if old and not data.get(banner_key(is_image(old))):
+        data[banner_key(is_image(old))] = old
+    if data.get("banner_image") and not data.get("banner_always"):
+        data["banner_always"] = data["banner_image"]
     path = data.get(key)
     return path if path and Path(path).is_file() else None
 
 
 def ask_banner():
-    """Выбор баннера: заставка-видео (выезжает со звуком) или картинка внизу слева.
-    Файл каждого вида помнится отдельно — Enter берёт прежний."""
+    """Выбор баннера. Возвращает (файл, постоянный ли он) или (None, False).
+    Файл для каждого вида помнится отдельно — Enter берёт прежний."""
     console.print("[bold cyan]▸ Баннер[/] [dim]·[/] что показывать")
-    console.print("  [bold cyan]1[/]  заставка-видео [dim]— выезжает раз в N секунд со звуком[/]")
-    console.print("  [bold cyan]2[/]  картинка [dim]— висит по центру снизу весь ролик[/]")
+    console.print("  [bold cyan]1[/]  заставка [dim]— видео, выезжает раз в N секунд со звуком[/]")
+    console.print("  [bold cyan]2[/]  постоянный баннер [dim]— картинка или видео, виден весь ролик[/]")
     console.print("  [bold cyan]-[/]  без баннера")
+    console.print("  [dim]зелёный фон убирается сам[/]")
     while True:
         choice = console.input("  ").strip()
         if choice in ("-", "–", "—", ""):
-            return None
+            return None, False
         if choice not in ("1", "2"):
             console.print("  [red]✗ выбери 1, 2 или минус[/]")
             continue
-        want_image = choice == "2"
-        title = "Картинка" if want_image else "Заставка"
-        key = "banner_image" if want_image else "banner_video"
-        old = remembered(key)
+        always = choice == "2"
+        title, what = ("Баннер", "картинку или видео") if always else ("Заставка", "видео")
+        old = remembered(banner_key(always))
         hint = f"Enter — прежний: {Path(old).name}; минус — назад" if old else "минус — назад"
         while True:
-            line = console.input(f"[bold cyan]▸ {title}[/] [dim]·[/] перетащи файл "
+            line = console.input(f"[bold cyan]▸ {title}[/] [dim]·[/] перетащи {what} "
                                  f"[dim]({hint})[/]\n  ").strip()
             if not line and old:
                 console.print(f"  [green]✓[/] баннер: {Path(old).name}")
-                return old
+                return old, always
             if line in ("-", "–", "—"):
                 break
             if not line:
@@ -190,31 +201,33 @@ def ask_banner():
             if not Path(path).is_file():
                 console.print(f"  [red]✗ файл не найден:[/] {path or line}")
                 continue
-            if is_image(path) != want_image:
-                console.print("  [red]✗ тут нужна картинка[/]" if want_image
-                              else "  [red]✗ тут нужно видео[/]")
+            if not always and is_image(path):
+                console.print("  [red]✗ заставке нужно видео; картинку можно поставить "
+                              "постоянным баннером (минус — назад)[/]")
                 continue
-            save_settings(**{key: str(Path(path).resolve())})
+            save_settings(**{banner_key(always): str(Path(path).resolve())})
             console.print(f"  [green]✓[/] баннер: {Path(path).name}")
-            return path
+            return path, always
         return ask_banner()
 
 
 def ask_files():
     """Спрашивает файлы по очереди; несколько перетащенных сразу раскладываются по порядку.
-    Возвращает [видео 1, видео 2, баннер, музыка], необязательные могут быть None."""
+    Возвращает (видео 1, видео 2, баннер, музыка, постоянный ли баннер);
+    необязательные файлы могут быть None."""
     slots = [
         ("Видео 1", "верх — звук, субтитры и длина ролика", None),
         ("Видео 2", "низ — без звука", "Enter — без него"),
         ("Баннер", None, None),
         ("Музыка", "фоном под ролик", "Enter — без неё"),
     ]
-    files, queue = [], []
+    files, queue, always = [], [], False
     while len(files) < len(slots):
         title, role, hint = slots[len(files)]
         is_banner = len(files) == 2
         if is_banner and not queue:
-            files.append(ask_banner())
+            path, always = ask_banner()
+            files.append(path)
             continue
         if not queue:
             tail = f" [dim]({hint})[/]" if hint else ""
@@ -232,11 +245,14 @@ def ask_files():
             files.append(path)
             console.print(f"  [green]✓[/] {title.lower()}: {Path(path).name}")
             if is_banner:
-                save_settings(**{banner_key(path): str(Path(path).resolve())})
+                # все файлы перетащили разом, вопроса не было: картинка — постоянный баннер,
+                # видео — заставка
+                always = is_image(path)
+                save_settings(**{banner_key(always): str(Path(path).resolve())})
         else:
             console.print(f"  [red]✗ файл не найден:[/] {path}")
             queue = []
-    return files
+    return (*files, always)
 
 
 def ask_every(default):
@@ -450,12 +466,68 @@ def probe(path):
             "w": int(video["width"]), "h": int(video["height"])}
 
 
-def alpha_bbox(path, info):
-    """Границы непрозрачной части (по кадру из середины ролика)."""
+def key_filters(key):
+    """Фильтры, делающие зелёный фон прозрачным. Маска сужается на пиксель: по самому
+    краю рисунка иначе остаётся зелёная кайма. Цвета самого рисунка не трогаются
+    (despill, которым обычно убирают кайму, перекрашивает жёлтое и салатовое)."""
+    return (f"format=yuva444p,chromakey={key}:{CHROMA_SIMILARITY}:{CHROMA_BLEND},"
+            "erosion=threshold0=0:threshold1=0:threshold2=0")
+
+
+def cutout(key, sw, sh):
+    """Фильтры, приводящие баннер к размеру в кадре; с key — ещё и вырезающие фон.
+    Вырезанное уменьшаем с умножением на прозрачность, чтобы зелень уже невидимых
+    точек не подмешалась в края."""
+    if not key:
+        return f"scale={sw}:{sh},format=yuva420p"
+    return (f"{key_filters(key)},premultiply=inplace=1,scale={sw}:{sh},"
+            "unpremultiply=inplace=1,format=yuva420p")
+
+
+def green_screen(path, duration=None):
+    """Цвет фона ('0xRRGGBB'), если кадр по краям залит зелёным, иначе None.
+    duration — длина видео; у картинки не задаётся. У видео смотрим начало, середину
+    и конец: выезжающая заставка в середине может закрывать собой края кадра."""
+    if not CHROMA:
+        return None
+    import numpy as np
+    sw, sh, m = 256, 144, 6                  # m — ширина рамки, по которой судим о фоне
+    times = [None] if duration is None else [0, duration / 2, max(0.0, duration - 0.1)]
+    for at in times:
+        seek = ["-ss", f"{at:.3f}"] if at else []
+        raw = subprocess.run(
+            ["ffmpeg", "-v", "error", *seek, "-i", path, "-frames:v", "1",
+             "-vf", f"scale={sw}:{sh}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+            capture_output=True).stdout
+        if len(raw) != sw * sh * 3:
+            continue
+        frame = np.frombuffer(raw, np.uint8).reshape(sh, sw, 3).astype(int)
+        edge = np.concatenate([frame[:m].reshape(-1, 3), frame[-m:].reshape(-1, 3),
+                               frame[m:-m, :m].reshape(-1, 3), frame[m:-m, -m:].reshape(-1, 3)])
+        r, g, b = (int(x) for x in np.median(edge, axis=0))
+        # рисунок может касаться края кадра, поэтому фоном должна быть большая часть рамки, не вся
+        same = (np.abs(edge - (r, g, b)).max(axis=1) < 40).mean()
+        if same >= 0.6 and g >= 80 and g - max(r, b) >= 50:
+            return f"0x{r:02X}{g:02X}{b:02X}"
+    return None
+
+
+def opaque_bbox(path, info, image, key=None, whole=False):
+    """Границы видимой части баннера: (x, y, ширина, высота).
+    У видео смотрим кадр из середины, а с whole — весь ролик (движущийся рисунок
+    должен помещаться целиком)."""
+    if image:
+        source, vf, frames = ["-loop", "1", "-i", path], "format=rgba,", 4
+    elif whole:
+        source, vf, frames = ["-i", path], "fps=4,", 80
+    else:
+        source, vf, frames = ["-ss", f"{info['duration'] / 2:.3f}", "-i", path], "", 4
+    if key:
+        vf += key_filters(key) + ","
     r = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-ss", f"{info['duration'] / 2:.3f}", "-i", path,
-         "-vf", "alphaextract,format=gray,cropdetect=limit=4:round=2:reset=0",
-         "-frames:v", "4", "-f", "null", "-"],
+        ["ffmpeg", "-hide_banner", *source,
+         "-vf", vf + "alphaextract,format=gray,cropdetect=limit=4:round=2:reset=0",
+         "-frames:v", str(frames), "-f", "null", "-"],
         capture_output=True, text=True,
     )
     m = re.findall(r"crop=(\d+):(\d+):(\d+):(\d+)", r.stderr)
@@ -486,28 +558,18 @@ def image_info(path):
             "alpha": bool(re.search(r"yuva|rgba|bgra|argb|abgr|gbrap|pal8|ya\d", pix))}
 
 
-def image_alpha_bbox(path, info):
-    """Границы непрозрачной части картинки."""
-    r = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loop", "1", "-i", path,
-         "-vf", "format=rgba,alphaextract,format=gray,cropdetect=limit=4:round=2:reset=0",
-         "-frames:v", "4", "-f", "null", "-"],
-        capture_output=True, text=True,
-    )
-    m = re.findall(r"crop=(\d+):(\d+):(\d+):(\d+)", r.stderr)
-    if not m:
-        return 0, 0, info["w"], info["h"]
-    bw, bh, bx, by = map(int, m[-1])
-    return bx, by, bw, bh
-
-
 def plan_banner(path):
-    """Баннер-картинка: вписываем в BAN_W×BAN_MAX_H и ставим по центру снизу.
-    Пустые поля вокруг рисунка (прозрачность) в отступы не считаются."""
-    info = image_info(path)
-    bx, by, bw, bh = image_alpha_bbox(path, info) if info["alpha"] else (0, 0, info["w"], info["h"])
+    """Постоянный баннер — картинка или видео по кругу: вписываем в BAN_W×BAN_MAX_H и ставим
+    по центру снизу. Пустые поля вокруг рисунка (прозрачность, зелёный фон) в отступы
+    не считаются."""
+    image = is_image(path)
+    info = image_info(path) if image else probe(path)
+    key = None if info["alpha"] else green_screen(path, None if image else info["duration"])
+    bx, by, bw, bh = (opaque_bbox(path, info, image, key, whole=True) if info["alpha"] or key
+                      else (0, 0, info["w"], info["h"]))
     k = min(BAN_W / bw, BAN_MAX_H / bh)
-    return {"path": path, "sw": even(info["w"] * k), "sh": even(info["h"] * k),
+    return {"path": path, "image": image, "key": key, "duration": info.get("duration"),
+            "sw": even(info["w"] * k), "sh": even(info["h"] * k),
             "x": round((W - bw * k) / 2 - bx * k),
             "y": round(H - BAN_BOTTOM - (by + bh) * k)}
 
@@ -877,9 +939,12 @@ def plan_insert(v3, D, every):
     starts = [t for t in range(every, int(D) + 1, every) if t + d3 <= D] if every > 0 else []
     if not starts:
         starts = [D * 0.25 if D * 0.25 + d3 <= D else 0.0]
-    bx, by, bw, bh = alpha_bbox(v3, i3) if i3["alpha"] else (0, 0, i3["w"], i3["h"])
+    key = None if i3["alpha"] else green_screen(v3, d3)
+    bx, by, bw, bh = (opaque_bbox(v3, i3, False, key) if i3["alpha"] or key
+                      else (0, 0, i3["w"], i3["h"]))
     k = min(V3_W / bw, V3_MAX_H / bh)
-    return {"path": v3, "info": i3, "times": [(float(t), min(t + d3, D)) for t in starts],
+    return {"path": v3, "info": i3, "key": key,
+            "times": [(float(t), min(t + d3, D)) for t in starts],
             "sw": even(i3["w"] * k), "sh": even(i3["h"] * k),
             "x": round((W - bw * k) / 2 - bx * k), "y": round(V3_TOP - by * k)}
 
@@ -998,8 +1063,8 @@ def part_args(v1, v2, d2, lay, ins, has_subs, f0, f1, out, fx=None, banner=None)
         skip = max(0.0, a - S)            # сколько вставки уже прошло до этого куска
         delay = max(0.0, S - a)
         args += ["-ss", f"{skip:.4f}", "-i", ins["path"]]
-        chain = f"[{idx}:v]scale={ins['sw']}:{ins['sh']},format=yuva420p"
-        if not ins["info"]["alpha"]:
+        chain = f"[{idx}:v]" + cutout(ins["key"], ins["sw"], ins["sh"])
+        if not ins["info"]["alpha"] and not ins["key"]:
             out_at = max(0.0, ins["info"]["duration"] - V3_FADE - skip)
             if skip == 0:
                 chain += f",fade=t=in:st=0:d={V3_FADE}:alpha=1"
@@ -1010,9 +1075,15 @@ def part_args(v1, v2, d2, lay, ins, has_subs, f0, f1, out, fx=None, banner=None)
         last, idx = f"withins{n}", idx + 1
 
     if banner:
-        # картинка поверх всего, одна и та же весь ролик; слегка покачивается
-        args += ["-loop", "1", "-i", banner["path"]]
-        chain = f"[{idx}:v]scale={banner['sw']}:{banner['sh']},format=yuva420p"
+        # поверх всего, весь ролик; видео идёт по кругу — с того места, где кончился прошлый кусок
+        if banner["image"]:
+            args += ["-loop", "1", "-i", banner["path"]]
+            chain = f"[{idx}:v]"
+        else:
+            args += ["-stream_loop", "-1", "-ss", f"{a % banner['duration']:.4f}",
+                     "-i", banner["path"]]
+            chain = f"[{idx}:v]fps={FPS},"
+        chain += cutout(banner["key"], banner["sw"], banner["sh"])
         if BAN_OPACITY < 1:
             chain += f",colorchannelmixer=aa={BAN_OPACITY}"
         fc.append(chain + "[ban]")
@@ -1036,7 +1107,9 @@ def split_frames(n_frames, jobs):
 
 
 def build(v1, v2, v3, out, model_name, language, subs=True, jobs=MAX_JOBS, every=INSERT_EVERY,
-          music=None):
+          music=None, always=None):
+    """v3 — баннер. always: показывать его весь ролик (True) или заставкой раз в every секунд
+    (False); None — решить по файлу: картинка видна всегда, видео идёт заставкой."""
     started = time.monotonic()
     i1 = probe(v1)
     i1["crop"] = detect_bars(v1, i1)
@@ -1056,14 +1129,21 @@ def build(v1, v2, v3, out, model_name, language, subs=True, jobs=MAX_JOBS, every
     if i2:
         table.add_row("[dim]низ[/]", Path(v2).name,
                       f"[dim]{fmt_time(i2['duration'])}  {i2['w']}×{i2['h']}[/]")
-    banner = plan_banner(v3) if v3 and is_image(v3) else None
-    ins = plan_insert(v3, D, every) if v3 and not banner else None
+    if v3 and always is None:
+        always = is_image(v3)
+    if v3 and not always and is_image(v3):
+        raise MontageError("заставкой может быть только видео; картинку можно показать "
+                           "постоянным баннером")
+    banner = plan_banner(v3) if v3 and always else None
+    ins = plan_insert(v3, D, every) if v3 and not always else None
     if ins:
         at = ", ".join(fmt_time(S) for S, _ in ins["times"])
-        table.add_row("[dim]вставка[/]", Path(v3).name, f"[dim]на {at}[/]")
+        table.add_row("[dim]заставка[/]", Path(v3).name,
+                      f"[dim]на {at}{', зелёный фон убран' if ins['key'] else ''}[/]")
     if banner:
         table.add_row("[dim]баннер[/]", Path(v3).name,
-                      f"[dim]весь ролик, по центру снизу, {banner['sw']}×{banner['sh']}[/]")
+                      f"[dim]весь ролик, по центру снизу"
+                      f"{', зелёный фон убран' if banner['key'] else ''}[/]")
     if music:
         table.add_row("[dim]музыка[/]", Path(music).name,
                       f"[dim]громкость {MUSIC_VOLUME * 100:g} %[/]")
@@ -1190,10 +1270,12 @@ def out_path(v1):
 def main():
     ap = argparse.ArgumentParser(description="Монтажёр шортсов")
     ap.add_argument("videos", nargs="*",
-                    help="видео 1 и (необязательно) видео 2 и 3; «-» — пропустить")
+                    help="видео 1 и (необязательно) видео 2 и баннер; «-» — пропустить")
     ap.add_argument("--music", help="файл с музыкой")
     ap.add_argument("--every", type=int, default=INSERT_EVERY,
-                    help="как часто показывать видео 3, сек")
+                    help="как часто показывать заставку (видео 3), сек")
+    ap.add_argument("--always", action="store_true",
+                    help="видео 3 — постоянный баннер на весь ролик, а не заставка")
     ap.add_argument("-o", "--output")
     ap.add_argument("--model", default=WHISPER_MODEL, help="модель Whisper")
     ap.add_argument("--lang", default=None, help="язык речи (ru/en), по умолчанию определяется сам")
@@ -1213,7 +1295,7 @@ def main():
             ap.error("первое видео обязательно")
         try:
             build(v[0], v[1], v[2], a.output or out_path(v[0]), a.model, a.lang,
-                  not a.no_subs, a.jobs, a.every, a.music)
+                  not a.no_subs, a.jobs, a.every, a.music, True if a.always else None)
         except MontageError as e:
             console.print(f"[red]✗ {e}[/]")
             sys.exit(1)
@@ -1231,12 +1313,12 @@ def main():
         try:
             if action == "montage":
                 console.print("[dim]Перетаскивай файлы в это окно и жми Enter.[/]")
-                v1, v2, v3, music = ask_files()
-                every = ask_every(a.every) if v3 and not is_image(v3) else a.every
+                v1, v2, v3, music, always = ask_files()
+                every = ask_every(a.every) if v3 and not always else a.every
                 subs = ask_subs() if not a.no_subs else False
                 console.print()
                 build(v1, v2, v3, out_path(v1), a.model, a.lang, subs,
-                      a.jobs, every, music)
+                      a.jobs, every, music, always)
             else:
                 download_flow()
         except (MontageError, download.DownloadError) as e:
